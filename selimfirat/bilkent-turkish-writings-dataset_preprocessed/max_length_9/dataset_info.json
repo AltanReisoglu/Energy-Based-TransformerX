@@ -1,0 +1,52 @@
+{
+  "builder_name": "parquet",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "bilkent-turkish-writings-dataset",
+  "dataset_size": 44316191,
+  "description": "",
+  "download_checksums": {
+    "hf://datasets/selimfirat/bilkent-turkish-writings-dataset@c4776e9518999ba8a7040141bda2be1ce0de68ca/data/train-00000-of-00001.parquet": {
+      "num_bytes": 27691674,
+      "checksum": null
+    }
+  },
+  "download_size": 27691674,
+  "features": {
+    "text": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "input_ids": {
+      "feature": {
+        "dtype": "int32",
+        "_type": "Value"
+      },
+      "_type": "List"
+    },
+    "attention_mask": {
+      "feature": {
+        "dtype": "int8",
+        "_type": "Value"
+      },
+      "_type": "List"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 72007865,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 44316191,
+      "num_examples": 9119,
+      "dataset_name": "bilkent-turkish-writings-dataset"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}
