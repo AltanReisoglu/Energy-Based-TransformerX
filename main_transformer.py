@@ -925,7 +925,7 @@ if __name__ == "__main__":
     args = EBTModelArgs()
     past_cache_list=[(rande,rande),(rande,rande),(rande,rande),(rande,rande),(rande,rande),(rande,rande)]
     model = EBTAdaLN(args, max_mcmc_steps=10).to(device=device)
-    x = torch.randn(2, 32, args.dim,device=device)
+    x = torch.randn(2, 2048, args.dim,device=device)
     out = model(x, start_pos=0, mcmc_step=0)
 
     def print_gpu_memory():

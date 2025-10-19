@@ -148,7 +148,7 @@ class EBTModelArgs:
     max_mem_len: int = 32  # veya ihtiyacınıza göre 0, 16, 64
     emb_frac_gradient : float = 1.0  # 1.0 ise tam gradyan, 0.0 ise gradyans yok
     n_routed_experts: Optional[int] = 32
-    window_size=None
+    window_size=32
 
     qk_norm=True
     qk_norm_groups=1
