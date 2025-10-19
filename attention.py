@@ -493,7 +493,7 @@ def apply_rotary_emb(
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
-class Attend(nn.Module):
+class AttendtRASH(nn.Module):
     def __init__(
         self,
         dim,
@@ -555,6 +555,8 @@ class Attend(nn.Module):
     def elu_feature_map(self, x):
         return F.elu(x) + 1
 
+    
+    
     def forward(
         self,
         q, k, v,
@@ -575,7 +577,10 @@ class Attend(nn.Module):
         scale = default(self.scale, q.shape[-1] ** -0.5)
 
         causal = self.causal
-
+        
+        seq = torch.arange(n, device = device)
+    
+     
         # handle kv cached decoding
 
         if n == 1 and causal:
@@ -600,74 +605,6 @@ class Attend(nn.Module):
                 attn_bias = F.pad(attn_bias, (1, 0), value = 0.)
 
         
-        if self.permission_linear_attention:
-            # ELU feature map ile kernel tabanlı linear attention
-            kv_einsum_eq = 'b j d' if k.ndim == 3 else 'b h j d'
-            q_prime = self.elu_feature_map(q)  
-            k_prime = self.elu_feature_map(k)
-            
-            # Kümülatif toplam ile normalizasyon
-            eps = getattr(self, "epsilon", 1e-6)
-
-            # feature-map ile hazırlanmış q_prime, k_prime hazır gelmeli
-            # (kodun önceki kısmında zaten q_prime, k_prime yapılıyor)
-            # q_prime: [B, H, Nq, D]
-            # k_prime: [B, H, Nk, D]
-            # v:       [B, H, Nk, E]
-
-            # 1) k_prime_sum zaten [B, H, 1, D] ise:
-            k_prime_sum = k_prime.sum(dim=-2, keepdim=True) + eps  # [B, H, 1, D]
-
-            # 2) kv = φ(K)^T @ V  -> [B, H, D, E]
-            #    burada einsum: sum over Nk
-            kv = einsum("bhjd,bhje->bhde", k_prime, v)  # [B, H, D, E]
-
-            # 3) numerator = φ(Q) @ kv -> [B, H, Nq, E]
-            numerator = einsum("bhid,bhde->bhie", q_prime, kv)  # [B,H,Nq,E]
-
-            # qk_similarities benzerlik göstergesi olarak numerator'un clone'u olabilir
-            qk_similarities = numerator.clone()
-
-            # Eğer prev_attn uygun shape'teyse (örn [B,H,Nq,E]) ekle, değilse atla
-            if exists(prev_attn) and prev_attn.shape == numerator.shape:
-                numerator = numerator + prev_attn
-                qk_similarities = numerator.clone()
-
-            # (opsiyonel) talking heads öncesi işlem / attn_bias 
-            # not: attn_bias genelde [B,H,Nq,Nk], burada Nk==1 ise kullanılabilir; bu örnekte atlıyoruz
-            # if exists(attn_bias) and attn_bias.shape == (B,H,Nq,1): numerator = numerator + attn_bias.unsqueeze(-1)
-
-            # 4) denominator = φ(Q) @ (φ(K)^T 1) -> [B, H, Nq, 1]
-            #    k_prime_sum: [B,H,1,D], q_prime: [B,H,Nq,D]
-            denominator = torch.einsum("bhid,bhjd->bhij", q_prime, k_prime_sum)  # [B, H, Nq, 1]
-
-            # 5) attention (linear normalized) -> [B,H,Nq,1]
-            attn = 1.0 / (denominator + eps)   # [B,H,Nq,1]
-            attn = attn.type(numerator.dtype)
-
-            # Klonla (intermediates için)
-            post_softmax_attn = attn.clone()
-            pre_softmax_attn = numerator.clone()  # linear'de pre-softmax olarak numerator kullanalım
-
-            # Dropout (varsa)
-            attn = self.attn_dropout(attn)
-
-            # talking_heads post-softmax (Conv2d expects (B, C, H, W) = (B, heads, Nq, 1))
-            if self.talking_heads:
-                # post_softmax_talking_heads expects channels=heads, input is b h i 1 -> ok
-                attn = self.post_softmax_talking_heads(attn)
-
-            # 6) out = numerator * attn  -> broadcasting [B,H,Nq,1]
-            out = numerator * attn
-            print("linear attention executed")
-            # return intermediates uyumlu şekilde oluştur
-            intermediates = Intermediates(
-                qk_similarities = qk_similarities,
-                pre_softmax_attn = pre_softmax_attn,
-                post_softmax_attn = post_softmax_attn
-            )
-
-            return out, intermediates
         
 
 
@@ -726,6 +663,191 @@ class Attend(nn.Module):
             post_softmax_attn = post_softmax_attn
         )"""
 
+        return out
+    
+
+class Attend(nn.Module):
+    def __init__(
+        self,
+        dim,
+        dropout = 0.1,
+        causal = False,
+        heads = None,
+        talking_heads = False,
+        sparse_topk = None,
+        scale = None,
+        qk_norm = False,
+        flash = False,
+        add_zero_kv = False,
+        onnxable = False,
+        linear_attention = False,
+        window_size = None,  # Yeni: Sliding window boyutu
+        **kwargs
+    ):
+        super().__init__()
+        self.scale = scale
+        self.qk_norm = qk_norm
+
+        self.causal = causal
+        self.create_causal_mask = onnx_create_causal_mask if onnxable else create_causal_mask
+
+        self.attn_fn = partial(F.softmax, dtype = torch.float32) if not qk_norm else F.softmax
+
+        self.dropout = dropout
+        self.attn_dropout = nn.Dropout(dropout)
+
+        # talking heads
+        assert not (flash and talking_heads), 'talking heads not compatible with flash MGQA'
+
+        self.talking_heads = talking_heads
+        if talking_heads:
+            self.pre_softmax_talking_heads = nn.Conv2d(heads, heads, 1, bias = False)
+            self.post_softmax_talking_heads = nn.Conv2d(heads, heads, 1, bias = False)
+
+        # sparse topk
+        assert not (flash and sparse_topk), 'sparse topk not compatible with flash MGQA'
+        self.sparse_topk = sparse_topk
+
+        # add a key / value token composed of zeros
+        self.add_zero_kv = add_zero_kv
+
+        # Sliding window support
+        self.window_size = window_size
+        assert not (flash and window_size), 'sliding window not yet compatible with flash attention'
+
+        # flash MGQA
+        self.flash = flash
+        assert not (flash and version.parse(torch.__version__) < version.parse('2.0.0')), \
+            'in order to use flash MGQA, you must be using pytorch 2.0 or above'
+
+        # determine efficient MGQA configs for cuda and cpu
+        self.flash_attn = partial(F.scaled_dot_product_attention, dropout_p=0.0, 
+                                 is_causal=causal, softmax_in_fp32=not qk_norm) if flash else None
+        
+        self.permission_linear_attention = linear_attention
+        self.epsilon = 1e-6
+
+    def elu_feature_map(self, x):
+        return F.elu(x) + 1
+
+    def create_sliding_window_mask(self, i, j, device):
+        """
+        Sliding window mask oluşturur
+        i: query sequence length
+        j: key sequence length
+        
+        Returns: Boolean mask (True = masked out, False = attend)
+        """
+        if self.window_size is None:
+            return None
+        
+        # Her pozisyon için izin verilen window'u belirle
+        # row_idx: query pozisyonları (i boyutunda)
+        # col_idx: key pozisyonları (j boyutunda)
+        row_idx = torch.arange(i, device=device)[:, None]  # (i, 1)
+        col_idx = torch.arange(j, device=device)[None, :]  # (1, j)
+        
+        # Window dışında kalan pozisyonları maskle
+        # Her query pozisyonu, kendi pozisyonundan window_size kadar geriye bakabilir
+        distance = row_idx - col_idx + (j - i)  # Offset için j-i ekliyoruz
+        
+        # Window dışındaki pozisyonlar True olacak (maskelenecek)
+        window_mask = (distance < 0) | (distance >= self.window_size)
+        
+        return window_mask
+
+    def forward(
+        self,
+        q, k, v,
+        mask = None,
+        attn_bias = None,
+        prev_attn = None
+    ):
+        """
+        einstein notation
+        b - batch
+        h - heads
+        n, i, j - sequence length (base sequence length, source, target)
+        d - feature dimension
+        """
+
+        n, heads, kv_heads, device = q.shape[-2], q.shape[1], k.shape[1], q.device
+        
+        scale = default(self.scale, q.shape[-1] ** -0.5)
+
+        causal = self.causal
+        
+        seq = torch.arange(n, device = device)
+    
+        # handle kv cached decoding
+        if n == 1 and causal:
+            causal = False
+
+        # handle grouped multi-query MGQA
+        if kv_heads == 1:
+            k, v = map(lambda t: rearrange(t, 'b 1 n d -> b n d'), (k, v))
+        elif kv_heads < heads:
+            k, v = map(lambda t: repeat(t, 'b kvh n d -> b (r kvh) n d', r = heads // kv_heads), (k, v))
+
+        # handle zero kv
+        if self.add_zero_kv:
+            k, v = map(lambda t: F.pad(t, (0, 0, 1, 0), value = 0.), (k, v))
+
+            if exists(mask):
+                mask = F.pad(mask, (1, 0), value = True)
+
+            if exists(attn_bias):
+                attn_bias = F.pad(attn_bias, (1, 0), value = 0.)
+
+        # Compute attention scores
+        kv_einsum_eq = 'b j d' if k.ndim == 3 else 'b h j d'
+        dots = einsum(f'b h i d, {kv_einsum_eq} -> b h i j', q, k) * scale
+        
+        if exists(prev_attn):
+            dots = dots + prev_attn
+
+        qk_similarities = dots.clone()
+
+        if self.talking_heads:
+            dots = self.pre_softmax_talking_heads(dots)
+            
+        if exists(attn_bias):
+            dots = dots + attn_bias
+        
+        i, j, dtype = *dots.shape[-2:], dots.dtype
+        mask_value = -torch.finfo(dots.dtype).max
+        
+        # Apply user-provided mask
+        if mask is not None:
+            o_mask = mask[:-1, :-1]
+            dots = dots + o_mask
+        
+        # Apply sliding window mask
+        if self.window_size is not None:
+            window_mask = self.create_sliding_window_mask(i, j, device=device)
+            dots = dots.masked_fill(window_mask, mask_value)
+        
+        # Apply causal mask
+        if causal:
+            causal_mask = self.create_causal_mask(i, j, device=device)
+            dots = dots.masked_fill(causal_mask, mask_value)
+
+        pre_softmax_attn = dots.clone()
+        
+        # Softmax attention
+        attn = self.attn_fn(dots, dim=-1)
+        attn = attn.type(dtype)
+        
+        post_softmax_attn = attn.clone()
+
+        attn = self.attn_dropout(attn)
+
+        if self.talking_heads:
+            attn = self.post_softmax_talking_heads(attn)
+
+        # Compute output
+        out = einsum(f'b h i j, {kv_einsum_eq} -> b h i d', attn, v)
+        print(out.shape,"ÖAŞIŞTI")
         return out
     
 class GRUGating(nn.Module):

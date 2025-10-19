@@ -413,6 +413,7 @@ class Attention(nn.Module):
             flash = False,
             onnxable = args.onnxable,
             linear_attention=False,
+            window_size=16,
         )
         self.kv_heads=args.n_kv_heads
         self.pre_attend=Predict_Attend(
