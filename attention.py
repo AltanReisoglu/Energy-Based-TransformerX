@@ -828,9 +828,10 @@ class Attend(nn.Module):
             dots = dots.masked_fill(window_mask, mask_value)
         
         # Apply causal mask
-        if causal:
-            causal_mask = self.create_causal_mask(i, j, device=device)
-            dots = dots.masked_fill(causal_mask, mask_value)
+        if self.window_size ==None:
+            if causal:
+                causal_mask = self.create_causal_mask(i, j, device=device)
+                dots = dots.masked_fill(causal_mask, mask_value)
 
         pre_softmax_attn = dots.clone()
         

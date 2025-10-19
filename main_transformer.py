@@ -413,7 +413,8 @@ class Attention(nn.Module):
             flash = False,
             onnxable = args.onnxable,
             linear_attention=False,
-            window_size=16,
+            window_size=args.window_size
+           
         )
         self.kv_heads=args.n_kv_heads
         self.pre_attend=Predict_Attend(
@@ -906,15 +907,51 @@ class EBTAdaLN(nn.Module):
             energies = energies[:, embeddings.shape[1] // 2:]
             
             return energies,new_key_values
-        
+
+
+
 if __name__ == "__main__":
+     
     #mock trial
-    
+    import time 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    torch.cuda.synchronize() if device == "cuda" else None
+    start = time.time()
+
+
+    
+    
     rande=torch.randn(2,2,16,32,device=device)
     args = EBTModelArgs()
     past_cache_list=[(rande,rande),(rande,rande),(rande,rande),(rande,rande),(rande,rande),(rande,rande)]
     model = EBTAdaLN(args, max_mcmc_steps=10).to(device=device)
-    x = torch.randn(2, 2, args.dim,device=device)
-    out = model(x, start_pos=0, mcmc_step=0,past_cache_list=past_cache_list)
+    x = torch.randn(2, 32, args.dim,device=device)
+    out = model(x, start_pos=0, mcmc_step=0)
+
+    def print_gpu_memory():
+        print(f"Allocated memory: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        print(f"Cached memory: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
+        # Step 1: Create a model and optimizer, and allocate some tensors on the GPU
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        
+
+    torch.cuda.synchronize() if device == "cuda" else None
+    end = time.time()
+    print(f"⏱️ Full Attention runtime: {end - start:.4f} s")
     print(out[0].shape)
+    
+    print("Before deleting references:")
+    
+    print_gpu_memory()
+    torch.cuda.empty_cache()
+    # Step 2: Delete the references to these objects
+    del model
+    
+    del x
+    print("After deleting references:")
+    
+    print_gpu_memory()
+
+   
