@@ -506,6 +506,7 @@ class Attention(nn.Module):
             torch.Tensor: Output tensor after attention.
 
         """
+        print(x.shape,"attention girdi şekli")
         bsz, full_seqlen, _ = x.shape # full_seqlen includes real embeds and pred embeds
         original_seqlen = full_seqlen//2 # length of original sequence without next pred
         context_length = original_seqlen + 1 # actual context length of model
@@ -654,6 +655,7 @@ class Attention(nn.Module):
         if exists(self.v_proj_gate):
             gates = self.v_proj_gate(x)
             out = out * gates.sigmoid()
+        print(out.shape ,"çıktı böyle")
         return self.wo_gate(out),new_cache,mem,(output_o,output_p)
 
 class AdaLNTransformerBlock(nn.Module):
@@ -763,9 +765,23 @@ class AdaLNTransformerBlock(nn.Module):
   
         out = h + gate_mlp.unsqueeze(1) * self.feed_forward(modulate(self.ffn_norm(h), shift_mlp, scale_mlp))
         out = self.residual_fn(out, x)
-       
+        
         return out,new_cache,mem,(output_o,output_p)
-    
+
+class EnergeticRecursiveReasoningModel_ACTV1ReasoningModule(nn.Module):
+    def __init__(self, layers: nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+
+    def forward(self, embeddings: torch.Tensor, input_injection: torch.Tensor, past_cache_list,start_pos,freqs_cis_q,freqs_cis_k,mask,time_embeddings,mems,prev_attns,mask2,pre_mem,allow=False) -> torch.Tensor:
+        embeddings = embeddings + input_injection
+        for i, layer in enumerate(self.layers):
+            past = past_cache_list[i] if past_cache_list is not None else None
+            embeddings,new_cache,pre_mem,prev_attns_out = layer(embeddings, start_pos, freqs_cis_q,freqs_cis_k, mask, time_embeddings,mems=mems,past_cache=past,prev_attn_prev=prev_attns[0],prev_attn_latter=prev_attns[1],mask2=mask2,pre_mem=pre_mem)
+            if allow:
+                new_key_values.append(new_cache)
+        return embeddings,pre_mem,prev_attns_out
+
 class FinalLayer(nn.Module):
     """
     The final layer of EBT when using adaLN.
@@ -784,8 +800,24 @@ class FinalLayer(nn.Module):
         x = self.linear(x)
         return x
 
+@dataclass
+class TinyRecursiveReasoningModel_ACTV1InnerCarry:
+    z_H: torch.Tensor
+    z_L: torch.Tensor
+
+
+@dataclass
+class TinyRecursiveReasoningModel_ACTV1Carry:
+    inner_carry: TinyRecursiveReasoningModel_ACTV1InnerCarry
+    
+    steps: torch.Tensor
+    halted: torch.Tensor
+    
+    current_data: Dict[str, torch.Tensor]
+
+    
 class EBTAdaLN(nn.Module):
-    def __init__(self, params: EBTModelArgs, max_mcmc_steps):
+    def __init__(self, params: EBTModelArgs,max_mcmc_steps):
         """
         Initialize a Transformer model.
 
@@ -801,6 +833,8 @@ class EBTAdaLN(nn.Module):
             freqs_cis (torch.Tensor): Precomputed cosine and sine frequencies.
 
         """
+        #self.config = config
+        
         super().__init__()
         self.params = params
         self.n_layers = params.n_layers
@@ -812,7 +846,7 @@ class EBTAdaLN(nn.Module):
                 nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
                 nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
             self.layers.append(block) # confirmed all layers and final layer are initialized to 0
-
+        self.reasoning_module = EnergeticRecursiveReasoningModel_ACTV1ReasoningModule(self.layers)
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
 
         self.head_dim=params.head_dim
@@ -828,7 +862,25 @@ class EBTAdaLN(nn.Module):
             init_whole_model_weights(self.final_layer.linear, self.params.weight_initialization)
         self.shift_mem_down=params.shift_mem_down
         self.memory_tokens=nn.Parameter(torch.rand(params.num_memory_tokens, params.dim))
-    def forward(self, embeddings: torch.Tensor, start_pos: int, mcmc_step = 0,past_cache_list=None):
+        
+        self.H_init = nn.Buffer(nn.init.trunc_normal_(torch.empty(self.params.dim), std=1), persistent=True)
+        self.L_init = nn.Buffer(nn.init.trunc_normal_(torch.empty(self.params.dim), std=1), persistent=True)
+
+    def empty_carry(self, batch_size: int,seqlen:int):
+
+        return TinyRecursiveReasoningModel_ACTV1InnerCarry(
+            z_H=torch.empty(batch_size, seqlen , self.params.dim),
+            z_L=torch.empty(batch_size, seqlen , self.params.dim),
+        )
+        
+    def reset_carry(self, reset_flag: torch.Tensor, carry: TinyRecursiveReasoningModel_ACTV1InnerCarry):
+        return TinyRecursiveReasoningModel_ACTV1InnerCarry(
+            z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
+            z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+        )
+
+    def forward(self, embeddings: torch.Tensor,carry, start_pos: int, mcmc_step = 0,past_cache_list=None):
+        global new_key_values
         new_key_values = []
         _bsz, seqlen = embeddings.shape[:2]
         original_seqlen=seqlen//2
@@ -891,11 +943,43 @@ class EBTAdaLN(nn.Module):
                 mems = [*mems_r, *mems_l]
             prev_attns=(None,None)
             pre_mem=None
-            for i, layer in enumerate(self.layers):
+
+            """for i, layer in enumerate(self.layers):
                 past = past_cache_list[i] if past_cache_list is not None else None
                 embeddings,new_cache,pre_mem,prev_attns_out = layer(embeddings, start_pos, freqs_cis_q,freqs_cis_k, mask, time_embeddings,mems=mems,past_cache=past,prev_attn_prev=prev_attns[0],prev_attn_latter=prev_attns[1],mask2=mask2,pre_mem=pre_mem)
                 
-                new_key_values.append(new_cache)
+                new_key_values.append(new_cache)"""
+            
+
+
+            z_H, z_L = carry.z_H, carry.z_L
+            # H_cycles-1 without grad
+            with torch.no_grad():
+                for _H_step in range(1):
+                    for _L_step in range(1):
+                        z_L,pre_mem,prev_attns_out = self.reasoning_module(z_L, z_H + embeddings, past_cache_list=past_cache_list,start_pos=start_pos,freqs_cis_q=freqs_cis_q,freqs_cis_k=freqs_cis_k,mask=mask,time_embeddings=time_embeddings,mems=mems,prev_attns=prev_attns,mask2=mask2,pre_mem=pre_mem)
+                    z_H,pre_mem,prev_attns_out = self.reasoning_module(z_H, z_L, past_cache_list=past_cache_list,start_pos=start_pos,freqs_cis_q=freqs_cis_q,freqs_cis_k=freqs_cis_k,mask=mask,time_embeddings=time_embeddings,mems=mems,prev_attns=prev_attns,mask2=mask2,pre_mem=pre_mem)
+            # 1 with grad
+            for _L_step in range(1):
+                z_L,pre_mem,prev_attns_out = self.reasoning_module(z_L, z_H + embeddings, past_cache_list=past_cache_list,start_pos=start_pos,freqs_cis_q=freqs_cis_q,freqs_cis_k=freqs_cis_k,mask=mask,time_embeddings=time_embeddings,mems=mems,prev_attns=prev_attns,mask2=mask2,pre_mem=pre_mem)
+            z_H,pre_mem,prev_attns_out = self.reasoning_module(z_H, z_L, past_cache_list=past_cache_list,start_pos=start_pos,freqs_cis_q=freqs_cis_q,freqs_cis_k=freqs_cis_k,mask=mask,time_embeddings=time_embeddings,mems=mems,prev_attns=prev_attns,mask2=mask2,pre_mem=pre_mem,allow=True)
+
+            """embeddings,pre_mem,prev_attns_out = self.reasoning_module(
+                embeddings=embeddings,
+                input_injection=0,
+                past_cache_list=past_cache_list,
+                start_pos=start_pos,
+                freqs_cis_q=freqs_cis_q,
+                freqs_cis_k=freqs_cis_k,
+                mask=mask,
+                time_embeddings=time_embeddings,
+                mems=mems,
+                prev_attns=prev_attns,
+                mask2=mask2,
+                pre_mem=pre_mem
+            )"""
+            new_carry = TinyRecursiveReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach()) 
+           
                 
 
             """new_mem = embeddings[:, :mems.shape[1], :]
@@ -906,7 +990,7 @@ class EBTAdaLN(nn.Module):
 
             energies = energies[:, embeddings.shape[1] // 2:]
             
-            return energies,new_key_values
+            return energies,new_key_values,new_carry
 
 
 

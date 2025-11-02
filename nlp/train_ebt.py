@@ -161,7 +161,7 @@ def main():
     model = model_cls(hparams).to(device)
     dataset = RedPajamaDataset(hparams)
     collate_fn = NLP_HF_Collator(hparams)
-
+    
     workers = torch.cuda.device_count() * hparams.num_workers_per_gpu
     dataloader = DataLoader(
         dataset,
@@ -207,14 +207,16 @@ def main():
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     scaler = GradScaler(enabled=(accelerator.mixed_precision == "fp16"))
-
+    carry=None
     for epoch in range(epochs):
         for step, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch}")):
+            if carry is None:
+                carry=model.init_carry(batch['input_ids'].size(0),device)  
             # batch is already moved by accelerator.prepare (but ensure tensors on device)
             # use accelerator.accumulate to handle gradient sync/accum correctly
             with accelerator.accumulate(model):
                 with autocast(enabled=(accelerator.mixed_precision == "fp16")):
-                    metrics, cache, energy = model.forward_loss_wrapper(batch, "train")
+                    metrics, cache, energy,carry = model.forward_loss_wrapper(batch, "train",carry=carry)
                     loss = metrics["loss"]
 
                 # scaler + backward via accelerator

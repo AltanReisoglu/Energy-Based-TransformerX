@@ -9,14 +9,49 @@ import pytorch_lightning as L
 import torch.optim as optim
 from torchmetrics import Accuracy
 from modules.model_utils import *
-
+from typing import Dict, List
 from modules.replay_buffer import CausalReplayBuffer
 from helpers import AdaptiveStepSizeController,AttentionWeightedEnergy
 import math
 import random
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
+from main_transformer import TinyRecursiveReasoningModel_ACTV1Carry,TinyRecursiveReasoningModel_ACTV1InnerCarry
 from turkish_tokenizer import HFTurkishTokenizer
+from pydantic import BaseModel
+
+class TinyRecursiveReasoningModel_ACTV1Config(BaseModel):
+    batch_size: int
+    seq_len: int
+    puzzle_emb_ndim: int = 0
+    num_puzzle_identifiers: int
+    vocab_size: int
+
+    H_cycles: int
+    L_cycles: int
+
+    H_layers: int # ignored
+    L_layers: int
+
+    # Transformer config
+    hidden_size: int
+    expansion: float
+    num_heads: int
+    pos_encodings: str
+
+    rms_norm_eps: float = 1e-5
+    rope_theta: float = 10000.0
+    
+    # Halting Q-learning config
+    halt_max_steps: int
+    halt_exploration_prob: float
+
+    forward_dtype: str = "bfloat16"
+
+    # Alexia: added
+    mlp_t: bool = False # use mlp on L instead of transformer
+    puzzle_emb_len: int = 16 # if non-zero, its specified to this value
+    no_ACT_continue: bool =  True # No continue ACT loss, only use the sigmoid of the halt which makes much more sense
+
 
 class Lyapunov(nn.Module):
     def __init__(self, input_dim, hidden_dim, epsilon=0.01):
@@ -118,8 +153,11 @@ def system_dynamics(x,INPUT_DIM):
     return dx # [B, 127])
     
 class EBT_NLP(L.LightningModule):
-    def __init__(self, hparams):
+    def __init__(self, hparams,config_dict:Dict):
         super().__init__()
+
+        self.config = TinyRecursiveReasoningModel_ACTV1Config(**config_dict)
+
         if isinstance(hparams, dict):#passed in from model ckpt
             self.hparams.update(hparams)
         else:
@@ -185,8 +223,27 @@ class EBT_NLP(L.LightningModule):
         self.use_adaptive_alpha=hparams.adaptive
         #self.adaptive_step_controller=AdaptiveStepSizeController()
         #self.awe=AttentionWeightedEnergy(self.hparams.embedding_dim)
-    def forward(self, x, start_pos = 0, learning = True, return_raw_logits = False, replay_buffer_logits = None, no_randomness = True,past_cache=None,prev_energy=None): # accepts input_ids as input; a lot of the logic here is just for S2 params, see pseudocode in paper for a more concise view of how this works. it can be < 10 LOC
+
+    
+    def initial_carry(self, batch_size,seqlen):
         
+
+        return TinyRecursiveReasoningModel_ACTV1InnerCarry(
+            
+            inner_carry=self.transformer.empty_carry(batch_size,seqlen),  # Empty is expected, it will be reseted in first pass as all sequences are halted.
+            steps=torch.zeros((batch_size, ), dtype=torch.int32),
+            halted=torch.ones((batch_size, ), dtype=torch.bool),  # Default to halted
+            
+            # current_data={k: torch.empty_like(v) for k, v in batch.items()}
+            
+        )
+        
+
+    def forward(self, x,carry, start_pos = 0, learning = True, return_raw_logits = False, replay_buffer_logits = None, no_randomness = True,past_cache=None,prev_energy=None): # accepts input_ids as input; a lot of the logic here is just for S2 params, see pseudocode in paper for a more concise view of how this works. it can be < 10 LOC
+        
+        new_inner_carry = self.inner.reset_carry(carry.halted,carry.inner_carry)
+        new_steps = torch.where(carry.halted, 0, carry.steps)
+
         predicted_distributions = []
         predicted_energies = []
 
@@ -261,9 +318,17 @@ class EBT_NLP(L.LightningModule):
                 
                 all_embeddings = torch.cat((real_embeddings_input, predicted_embeddings), dim = 1) # B, 2*S, D
                 
-                energy_preds,new_cache = self.transformer(all_embeddings, start_pos = start_pos, mcmc_step=mcmc_step,past_cache_list=past_cache) # is B, 2*S, D; checked and there are no in place ops; mcmc_step only applies to when using certain types of ebt
+                energy_preds,new_cache, new_inner_carry = self.transformer(all_embeddings,new_inner_carry, start_pos = start_pos, mcmc_step=mcmc_step,past_cache_list=past_cache) # is B, 2*S, D; checked and there are no in place ops; mcmc_step only applies to when using certain types of ebt
                 #energy_preds, attention_weights=self.awe(predicted_embeddings,energy_preds)
                 
+                with torch.no_grad():
+                    # Step
+                    new_steps = new_steps + 1
+                    is_last_step = new_steps >= 1
+                    
+                    halted = is_last_step
+
+                    
                 energy_preds = energy_preds.reshape(-1, 1)
                 
                 
@@ -355,9 +420,9 @@ class EBT_NLP(L.LightningModule):
                 predicted_distributions.append(predicted_tokens_for_loss)        
 
 
-        return predicted_distributions, predicted_energies,new_cache
+        return predicted_distributions, predicted_energies,new_cache,TinyRecursiveReasoningModel_ACTV1Carry(new_inner_carry, new_steps, halted)
 
-    def forward_loss_wrapper(self, x, phase="train",past_cache:List=None,prev_energy=None):
+    def forward_loss_wrapper(self, x, phase="train",carry=None,past_cache:List=None,prev_energy=None):
         no_randomness = False if phase == "train" else True
         if not no_randomness and self.mcmc_replay_buffer: # dont do this when doing val/testing
             all_tokens = x['input_ids'] # B,T
@@ -365,14 +430,14 @@ class EBT_NLP(L.LightningModule):
             all_tokens=all_tokens.squeeze(1) #B,T
             
             input_ids, replay_buffer_logits, next_token_indices = self.replay_buffer.get_batch(all_tokens) # this automatically does indexing for input ids and next token indices while also passing back the logits
-            predicted_distributions, predicted_energies,new_cache = self(input_ids, return_raw_logits = True, replay_buffer_logits = replay_buffer_logits, no_randomness = no_randomness,past_cache=past_cache,prev_energy=prev_energy)
+            predicted_distributions, predicted_energies,new_cache,new_carry = self(input_ids,carry, return_raw_logits = True, replay_buffer_logits = replay_buffer_logits, no_randomness = no_randomness,past_cache=past_cache,prev_energy=prev_energy)
             self.replay_buffer.update(all_tokens.detach(), predicted_distributions[-1].detach()) # update using the final predicted distributions
         else:
             
             input_ids = x['input_ids'].squeeze(dim=1)[:, :-1]#squeeze geleblir #B,T-1
             B,T=input_ids.shape #B,T-1
             
-            predicted_distributions, predicted_energies,new_cache = self(input_ids, return_raw_logits = True, no_randomness = no_randomness,past_cache=past_cache,prev_energy=prev_energy)
+            predicted_distributions, predicted_energies,new_cache,new_carry = self(input_ids,carry, return_raw_logits = True, no_randomness = no_randomness,past_cache=past_cache,prev_energy=prev_energy)
             next_token_indices = x['input_ids'].squeeze(dim=1)[:, 1:] # squeeze was to remove 1 on 2nd dim
 
         if self.hparams.execution_mode == "finetune": # Only tokens after "[[Answer]]: " will be calculated in finetune
@@ -423,8 +488,8 @@ class EBT_NLP(L.LightningModule):
 
         if self.hparams.contrastive_loss: # works by pushing up on energies model predicted and pushing down on energy of true samples
             contrastive_loss = self.calculate_contrastive_loss(predicted_energies, input_ids, next_token_indices,past_cache=past_cache)
-            total_loss = self.hparams.reconstruction_coeff * reconstruction_loss + self.hparams.contrastive_loss_coeff * contrastive_loss+lyapunov_loss_value
-            contrastive_loss = contrastive_loss.detach()
+            total_loss = self.hparams.reconstruction_coeff * reconstruction_loss + self.hparams.contrastive_loss_coeff * contrastive_loss
+            contrastive_loss = contrastive_loss.detach() #üste lyapunov eklenebilir.
         else:
             total_loss = self.hparams.reconstruction_coeff * reconstruction_loss
             contrastive_loss = 0.0
@@ -438,7 +503,7 @@ class EBT_NLP(L.LightningModule):
             'initial_final_pred_energies_gap': initial_final_pred_energies_gap,
             'perplexity': ppl_loss
         }
-        return log_dict,new_cache,predicted_energy
+        return log_dict,new_cache,predicted_energy,new_carry
     
 
     def corrupt_embeddings(self, embeddings):
