@@ -87,7 +87,7 @@ class EBTModelArgs:
     alibi_num_heads: Optional[int] = n_heads
     rel_pos_bias: bool = False
     rel_pos_num_buckets: int = 32
-    rel_pos_max_distance: int = 128
+    rel_pos_max_distance: int = 64
     dynamic_pos_bias: bool = False
     dynamic_pos_bias_log_distance: bool = False
     dynamic_pos_bias_mlp_depth: int = 2
@@ -148,7 +148,7 @@ class EBTModelArgs:
     max_mem_len: int = 32  # veya ihtiyacınıza göre 0, 16, 64
     emb_frac_gradient : float = 1.0  # 1.0 ise tam gradyan, 0.0 ise gradyans yok
     n_routed_experts: Optional[int] = 32
-    window_size=32
+    
 
     qk_norm=True
     qk_norm_groups=1

@@ -73,8 +73,8 @@ class RedPajamaDataset(Dataset):
             raise ValueError("Bilkent NLP is a pretrain dataset, no other execution modes supported.")
             
         self.max_length = hparams.context_length + 1
-        self.block_size = 128
-        self.stride = 128 if hasattr(hparams, 'block_stride') else self.block_size  # Default: overlap yok
+        self.block_size = 64
+        self.stride = 64 if hasattr(hparams, 'block_stride') else self.block_size  # Default: overlap yok
         dataset_dir = hparams.dataset_dir
         self.hparams = hparams
         self.tokenizer = HFTurkishTokenizer(

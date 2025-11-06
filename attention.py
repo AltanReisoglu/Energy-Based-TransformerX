@@ -671,7 +671,7 @@ class Attend(nn.Module):
         self,
         dim,
         dropout = 0.1,
-        causal = False,
+        causal = True,
         heads = None,
         talking_heads = False,
         sparse_topk = None,
@@ -681,7 +681,7 @@ class Attend(nn.Module):
         add_zero_kv = False,
         onnxable = False,
         linear_attention = False,
-        window_size = None,  # Yeni: Sliding window boyutu
+        window_size = None, 
         **kwargs
     ):
         super().__init__()
@@ -823,15 +823,15 @@ class Attend(nn.Module):
             dots = dots + o_mask
         
         # Apply sliding window mask
-        if self.window_size is not None:
+        """if self.window_size is not None:
             window_mask = self.create_sliding_window_mask(i, j, device=device)
-            dots = dots.masked_fill(window_mask, mask_value)
+            dots = dots.masked_fill(window_mask, mask_value)"""
         
         # Apply causal mask
-        if self.window_size ==None:
-            if causal:
-                causal_mask = self.create_causal_mask(i, j, device=device)
-                dots = dots.masked_fill(causal_mask, mask_value)
+        
+        if causal:
+            causal_mask = self.create_causal_mask(i, j, device=device)
+            dots = dots.masked_fill(causal_mask, mask_value)
 
         pre_softmax_attn = dots.clone()
         
@@ -848,7 +848,7 @@ class Attend(nn.Module):
 
         # Compute output
         out = einsum(f'b h i j, {kv_einsum_eq} -> b h i d', attn, v)
-        print(out.shape,"ÖAŞIŞTI")
+        
         return out
     
 class GRUGating(nn.Module):
@@ -1060,14 +1060,14 @@ class MGQA(nn.Module):
             if exists(mem):
                 k = torch.cat((mk, k), dim = -2)
                 v = torch.cat((mv, v), dim = -2)
-        print("cache çıktısı",k.shape)
+        
         if self.qk_norm:
             qk_l2norm = partial(l2norm, groups = self.qk_norm_groups)
             q, k = map(qk_l2norm, (q, k))
 
             q = q * self.qk_norm_q_scale
             k = k * self.qk_norm_k_scale
-        print("norm çıktısı",k.shape)
+        
         if exists(rotary_pos_emb) and not has_context:
             freqs, xpos_scale = rotary_pos_emb
             q_xpos_scale, k_xpos_scale = (xpos_scale, xpos_scale ** -1.) if exists(xpos_scale) else (1., 1.)

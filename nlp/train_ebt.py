@@ -94,7 +94,7 @@ def main():
     )
 
     ebt_params = dict(
-        model_max_length=128,
+        model_max_length=64,
         mcmc_step_size=500.0,
         model_name="ebt",
         mcmc_step_size_lr_multiplier=1500.0,
@@ -147,43 +147,36 @@ def main():
 
     hparams = SimpleNamespace(**hparams)
 
+    config_dict=dict(
+    H_cycles=1,
+    L_cycles=1,
+
+    H_layers=1,
+    L_layers=1
+    )
     # =========================
     # Model & Dataset
     # =========================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model_cls = {
-        
         "ebt": EBT_NLP,
     }[hparams.model_name]
-    
 
-    model = model_cls(hparams).to(device)
+    model = model_cls(hparams, config_dict).to(device)
     dataset = RedPajamaDataset(hparams)
     collate_fn = NLP_HF_Collator(hparams)
-    
-    workers = torch.cuda.device_count() * hparams.num_workers_per_gpu
+
     dataloader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=False,
+        shuffle=True,
         num_workers=0,
         collate_fn=collate_fn,
         pin_memory=True
     )
 
-    #optimizer = AdamW(model.parameters(), lr=hparams.lr)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    
-    ema=ExponentialMovingAverage(trainable_params)
-    # =========================
-    # Eğitim Döngüsü
-    # =========================
-    model.train()
-    global_step = 0
-    max_steps = hparams.max_steps
-    cache=None
-    epochs=100
+    ema = ExponentialMovingAverage([p for p in model.parameters() if p.requires_grad])
 
     accelerator = Accelerator(
         gradient_accumulation_steps=hparams.gradient_accumulation_steps,
@@ -193,36 +186,40 @@ def main():
 
     if hparams.use_activation_checkpointing:
         maybe_enable_activation_checkpointing(model)
-    
-        if hparams.use_torch_compile and hasattr(torch, "compile"):
-            try:
-                model = torch.compile(model)
-                print("Wrapped model with torch.compile()")
-            except Exception as e:
-                print("torch.compile failed:", e)
 
-    dataset = RedPajamaDataset(hparams)
+    if hparams.use_torch_compile and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)
+            print("Model compiled successfully with torch.compile()")
+        except Exception as e:
+            print("torch.compile failed:", e)
 
     optimizer = build_optimizer(model, hparams)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     scaler = GradScaler(enabled=(accelerator.mixed_precision == "fp16"))
-    carry=None
+    global_step = 0
+    max_steps = hparams.max_steps
+    epochs = 10  # istediğin kadar epoch belirleyebilirsin
+    carry = None
+
+    print("Starting training...")
+
     for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+
         for step, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch}")):
             if carry is None:
-                carry=model.init_carry(batch['input_ids'].size(0),device)  
-            # batch is already moved by accelerator.prepare (but ensure tensors on device)
-            # use accelerator.accumulate to handle gradient sync/accum correctly
+                carry = model.initial_carry(batch['input_ids'].size(0), 2 * batch['input_ids'].size(1) - 2)
+
             with accelerator.accumulate(model):
                 with autocast(enabled=(accelerator.mixed_precision == "fp16")):
-                    metrics, cache, energy,carry = model.forward_loss_wrapper(batch, "train",carry=carry)
+                    metrics, cache, energy, carry = model.forward_loss_wrapper(batch, "train", carry=carry)
                     loss = metrics["loss"]
-
-                # scaler + backward via accelerator
+                optimizer.zero_grad()
                 if scaler.is_enabled():
                     scaler.scale(loss).backward()
-                    # optional gradient clipping
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     scaler.step(optimizer)
@@ -232,33 +229,31 @@ def main():
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
 
-                optimizer.zero_grad()
-                # update EMA (if desired, ensure EMA works with distributed — you may need to sync)
-                try:
-                    ema.update(model.parameters())
-                except Exception:
-                    pass
+                
+                ema.update(model.parameters())
 
-                # logging and step accounting
-                if accelerator.is_main_process:
-                    print(f"[Main] Step {step} | loss={loss.item():.4f}")
-
+                epoch_loss += loss.item()
                 global_step += 1
 
+                if accelerator.is_main_process and step % 10 == 0:
+                    print(f"[Epoch {epoch} | Step {step}] Loss: {loss.item():.4f}")
 
-    torch.save(model.state_dict(), "Altan_Ebt.pt")
-    # Save final model (only on main process)
+                if global_step >= max_steps:
+                    break  # aşırı uzun eğitimi durdurmak için
+
+        avg_loss = epoch_loss / len(dataloader)
+        if accelerator.is_main_process:
+            print(f"Epoch {epoch} completed. Avg loss: {avg_loss:.4f}")
+
+        # her epoch sonrası modeli kaydet
+        if accelerator.is_main_process:
+            unwrapped = accelerator.unwrap_model(model)
+            torch.save(unwrapped.state_dict(), f"checkpoint_epoch_{epoch}.pt")
+
+    # final model
     if accelerator.is_main_process:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        torch.save(unwrapped_model.state_dict(), "final_model.pt")
-        print("Saved final_model.pt")
-
-if __name__ == "__main__":
-    main()
-
-
-
+        torch.save(accelerator.unwrap_model(model).state_dict(), "final_model.pt")
+        print("Training complete. Saved final_model.pt")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 from moe import DeepseekV2MoE, MoeConfig
 
 from einops import pack, rearrange, reduce, repeat, unpack
@@ -413,7 +414,7 @@ class Attention(nn.Module):
             flash = False,
             onnxable = args.onnxable,
             linear_attention=False,
-            window_size=args.window_size
+            
            
         )
         self.kv_heads=args.n_kv_heads
@@ -506,7 +507,7 @@ class Attention(nn.Module):
             torch.Tensor: Output tensor after attention.
 
         """
-        print(x.shape,"attention girdi şekli")
+        
         bsz, full_seqlen, _ = x.shape # full_seqlen includes real embeds and pred embeds
         original_seqlen = full_seqlen//2 # length of original sequence without next pred
         context_length = original_seqlen + 1 # actual context length of model
@@ -561,7 +562,7 @@ class Attention(nn.Module):
         xq_o = xq[:, :original_seqlen, :, :] #B, S-1, N, H (N and H are num head and head dim respectively)
         xk_o = xk[:, :original_seqlen+mem_len, :, :]
         xv_o = xv[:, :original_seqlen+mem_len, :, :]
-        
+       
         # _p is for predicted attention stuff
         xq_p = xq[:, original_seqlen:, :, :] #B, S-1, N, H (N and H are num head and head dim respectively)
         xk_p = xk[:, original_seqlen+mem_len:, :, :]
@@ -620,7 +621,7 @@ class Attention(nn.Module):
             attn_bias = attn_bias,
             prev_attn = prev_attn_prev
         )
-        
+    
         if exists(xr):
             xr=repeat(xr, 'b kvh n d -> b (r kvh) n d', r = output_o.shape[1] // xr.shape[1])
             output_o = output_o * xr + output_o
@@ -655,7 +656,7 @@ class Attention(nn.Module):
         if exists(self.v_proj_gate):
             gates = self.v_proj_gate(x)
             out = out * gates.sigmoid()
-        print(out.shape ,"çıktı böyle")
+
         return self.wo_gate(out),new_cache,mem,(output_o,output_p)
 
 class AdaLNTransformerBlock(nn.Module):
@@ -813,7 +814,7 @@ class TinyRecursiveReasoningModel_ACTV1Carry:
     steps: torch.Tensor
     halted: torch.Tensor
     
-    current_data: Dict[str, torch.Tensor]
+    
 
     
 class EBTAdaLN(nn.Module):
@@ -869,14 +870,14 @@ class EBTAdaLN(nn.Module):
     def empty_carry(self, batch_size: int,seqlen:int):
 
         return TinyRecursiveReasoningModel_ACTV1InnerCarry(
-            z_H=torch.empty(batch_size, seqlen , self.params.dim),
-            z_L=torch.empty(batch_size, seqlen , self.params.dim),
+            z_H=torch.empty(batch_size, seqlen , self.params.dim,device=device),
+            z_L=torch.empty(batch_size, seqlen , self.params.dim,device=device),
         )
         
     def reset_carry(self, reset_flag: torch.Tensor, carry: TinyRecursiveReasoningModel_ACTV1InnerCarry):
         return TinyRecursiveReasoningModel_ACTV1InnerCarry(
-            z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
-            z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+            z_H=torch.where(reset_flag.view(-1, 1, 1).to(device), self.H_init, carry.z_H).to(carry.z_H.device),
+            z_L=torch.where(reset_flag.view(-1, 1, 1).to(device), self.L_init, carry.z_L).to(carry.z_L.device),
         )
 
     def forward(self, embeddings: torch.Tensor,carry, start_pos: int, mcmc_step = 0,past_cache_list=None):
@@ -957,6 +958,7 @@ class EBTAdaLN(nn.Module):
             with torch.no_grad():
                 for _H_step in range(1):
                     for _L_step in range(1):
+
                         z_L,pre_mem,prev_attns_out = self.reasoning_module(z_L, z_H + embeddings, past_cache_list=past_cache_list,start_pos=start_pos,freqs_cis_q=freqs_cis_q,freqs_cis_k=freqs_cis_k,mask=mask,time_embeddings=time_embeddings,mems=mems,prev_attns=prev_attns,mask2=mask2,pre_mem=pre_mem)
                     z_H,pre_mem,prev_attns_out = self.reasoning_module(z_H, z_L, past_cache_list=past_cache_list,start_pos=start_pos,freqs_cis_q=freqs_cis_q,freqs_cis_k=freqs_cis_k,mask=mask,time_embeddings=time_embeddings,mems=mems,prev_attns=prev_attns,mask2=mask2,pre_mem=pre_mem)
             # 1 with grad

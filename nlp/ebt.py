@@ -20,32 +20,15 @@ from turkish_tokenizer import HFTurkishTokenizer
 from pydantic import BaseModel
 
 class TinyRecursiveReasoningModel_ACTV1Config(BaseModel):
-    batch_size: int
-    seq_len: int
-    puzzle_emb_ndim: int = 0
-    num_puzzle_identifiers: int
-    vocab_size: int
-
+    
     H_cycles: int
     L_cycles: int
 
-    H_layers: int # ignored
+    H_layers: int 
     L_layers: int
 
-    # Transformer config
-    hidden_size: int
-    expansion: float
-    num_heads: int
-    pos_encodings: str
 
-    rms_norm_eps: float = 1e-5
-    rope_theta: float = 10000.0
     
-    # Halting Q-learning config
-    halt_max_steps: int
-    halt_exploration_prob: float
-
-    forward_dtype: str = "bfloat16"
 
     # Alexia: added
     mlp_t: bool = False # use mlp on L instead of transformer
@@ -228,11 +211,11 @@ class EBT_NLP(L.LightningModule):
     def initial_carry(self, batch_size,seqlen):
         
 
-        return TinyRecursiveReasoningModel_ACTV1InnerCarry(
+        return TinyRecursiveReasoningModel_ACTV1Carry(
             
             inner_carry=self.transformer.empty_carry(batch_size,seqlen),  # Empty is expected, it will be reseted in first pass as all sequences are halted.
-            steps=torch.zeros((batch_size, ), dtype=torch.int32),
-            halted=torch.ones((batch_size, ), dtype=torch.bool),  # Default to halted
+            steps=torch.zeros((batch_size, ), dtype=torch.int32,device=device),
+            halted=torch.ones((batch_size, ), dtype=torch.bool,device=device),  # Default to halted
             
             # current_data={k: torch.empty_like(v) for k, v in batch.items()}
             
@@ -241,7 +224,7 @@ class EBT_NLP(L.LightningModule):
 
     def forward(self, x,carry, start_pos = 0, learning = True, return_raw_logits = False, replay_buffer_logits = None, no_randomness = True,past_cache=None,prev_energy=None): # accepts input_ids as input; a lot of the logic here is just for S2 params, see pseudocode in paper for a more concise view of how this works. it can be < 10 LOC
         
-        new_inner_carry = self.inner.reset_carry(carry.halted,carry.inner_carry)
+        new_inner_carry = self.transformer.reset_carry(carry.halted,carry.inner_carry)
         new_steps = torch.where(carry.halted, 0, carry.steps)
 
         predicted_distributions = []
@@ -488,7 +471,7 @@ class EBT_NLP(L.LightningModule):
 
         if self.hparams.contrastive_loss: # works by pushing up on energies model predicted and pushing down on energy of true samples
             contrastive_loss = self.calculate_contrastive_loss(predicted_energies, input_ids, next_token_indices,past_cache=past_cache)
-            total_loss = self.hparams.reconstruction_coeff * reconstruction_loss + self.hparams.contrastive_loss_coeff * contrastive_loss
+            total_loss = self.hparams.reconstruction_coeff * reconstruction_loss + self.hparams.contrastive_loss_coeff * contrastive_loss+lyapunov_loss_value
             contrastive_loss = contrastive_loss.detach() #üste lyapunov eklenebilir.
         else:
             total_loss = self.hparams.reconstruction_coeff * reconstruction_loss
@@ -583,9 +566,9 @@ class EBT_NLP(L.LightningModule):
     
     def warm_up_finished(self):
         if self.hparams.clamp_max_after_warm_up != 0.0:
-            print(f"changing clamp value after warming up from {self.hparams.clamp_futures_grad_max_change} (see next line)")
+            #print(f"changing clamp value after warming up from {self.hparams.clamp_futures_grad_max_change} (see next line)")
             self.hparams.clamp_futures_grad_max_change = self.hparams.clamp_max_after_warm_up
-            print(f"to the value {self.hparams.clamp_futures_grad_max_change}")
+            #print(f"to the value {self.hparams.clamp_futures_grad_max_change}")
         self.finished_warming_up = True
         self.langevin_dynamics_noise_std.requires_grad = self.hparams.langevin_dynamics_noise_learnable
 
@@ -663,7 +646,7 @@ class EBT_NLP(L.LightningModule):
                 softmaxed_preds = self.softmax(all_final_pred_4d)
                 for b in range(min(B, 2)):  # Only show first 2 batches to avoid excessive output
                     for s in range(min(S, 5)):  # Only show first 5 sequence positions
-                        print(f"Batch {b}, Seq pos {s} - Sample distances:")
+                        #print(f"Batch {b}, Seq pos {s} - Sample distances:")
                         for i in range(G):
                             for j in range(i+1, G):
                                 p_i = softmaxed_preds[b, i, s]
@@ -677,7 +660,7 @@ class EBT_NLP(L.LightningModule):
                                 )
                                 # L2 distance
                                 l2_dist = torch.norm(p_i - p_j, p=2)
-                                print(f"  Sample {i} vs {j}: KL={kl_div.item():.4f}, L2={l2_dist.item():.4f}")
+                                #print(f"  Sample {i} vs {j}: KL={kl_div.item():.4f}, L2={l2_dist.item():.4f}")
             if self.hparams.infer_energy_sampling_technique == "min":
                 best_indices_2d = final_energies_3d.argmin(dim=1)  # shape: (B, S)
             elif self.hparams.infer_energy_sampling_technique == "max":
@@ -912,7 +895,7 @@ if __name__=="__main__":
     
     ÇIKTI["input_ids"]=repeat(ÇIKTI["input_ids"],"b -> 3 b")
     ÇIKTI["attention_mask"]=repeat(ÇIKTI["attention_mask"],"b -> 3 b")
-    print(ÇIKTI["input_ids"].shape)
+    
     
     tokenzier=HFTurkishTokenizer()
     hparams = SimpleNamespace(**hparams)
