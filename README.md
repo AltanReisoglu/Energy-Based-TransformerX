@@ -1,4 +1,4 @@
-# Energy-Based Transformer (EBT)
+# Energy-Based Recursive Transformer (EBRT)
 
 Bu proje, yeni nesil bir Energy-Based Transformer modelinin implementasyonudur. Özel yapay sinir ağı mimarisi, Lyapunov kararlılık teorisi ve adaptif öğrenme mekanizmalarını birleştirerek daha güçlü ve kararlı bir dil modeli sunmaktadır.
 
