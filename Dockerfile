@@ -1,29 +1,40 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10
+FROM python:3.10-slim-bullseye
 
-# Set working directory in the container
+# Keep Python output unbuffered and don't write .pyc files
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
+# Install minimal system dependencies needed for building Python packages and git
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file first (if you have one)
-COPY pyproject.toml ./
+# Copy dependency manifests first to leverage Docker layer caching
+COPY pyproject.toml poetry.lock* /app/
 
-# Install Python dependencies
-RUN pip install --no-cache-dir poetry && \
-    poetry config virtualenvs.create false && \
-    poetry install --no-dev
+# Install Poetry if pyproject exists and install dependencies. If no pyproject, skip.
+RUN if [ -f pyproject.toml ]; then \
+      pip install --no-cache-dir poetry && \
+      poetry config virtualenvs.create false && \
+      poetry install --no-dev --no-interaction --no-ansi; \
+    else \
+      echo "No pyproject.toml found, skipping Poetry install"; \
+    fi
 
-# Copy the project files
-COPY . .
+# Copy the rest of the project
+COPY . /app
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Create a non-root user for better security (optional)
+ARG UID=1000
+RUN useradd -m -u $UID appuser || true
+USER appuser
 
-# Command to run when starting the container
+EXPOSE 8000
+
+# Default command; override in compose or docker run if needed
 CMD ["python", "main.py"]

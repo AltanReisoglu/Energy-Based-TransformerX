@@ -3,38 +3,29 @@ version: '3.8'
 services:
   energic-model:
     build: .
-    volumes:
-      - .:/app
-      - model-data:/app/data
+    container_name: energic-model
+    restart: unless-stopped
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    command: python main.py
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - .:/app:cached
+      - model-data:/app/data
+    gpus: all
+    ports:
+      - "8000:8000"
+    command: ["python", "main.py"]
 
-  # Jupyter notebook service (optional)
   jupyter:
     build: .
+    container_name: energic-jupyter
+    restart: unless-stopped
     volumes:
-      - .:/app
+      - .:/app:cached
       - model-data:/app/data
     ports:
       - "8888:8888"
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    command: jupyter notebook --ip 0.0.0.0 --port 8888 --no-browser --allow-root
+    gpus: all
+    command: ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
 
 volumes:
   model-data:
