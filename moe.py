@@ -333,7 +333,7 @@ if __name__ == "__main__":
     moe = DeepseekV2MoE(config).to(device)
     
     #mock kod bebek gibi
-    x = torch.randn(2, 32, 256,device=device)
+    x = torch.randn(1,128,256,device=device)
     
     print("Input shape:", x.shape)
     output = moe(x)

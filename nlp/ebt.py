@@ -573,7 +573,10 @@ class EBT_NLP(L.LightningModule):
         self.langevin_dynamics_noise_std.requires_grad = self.hparams.langevin_dynamics_noise_learnable
 
 
-    def ebt_advanced_inference(self, original_real_input_ids, start_pos=0, learning=True,past_cache=None): # code was written with help from AI
+    def ebt_advanced_inference(self, original_real_input_ids, start_pos=0, learning=True,past_cache=None,carry=None):
+        new_inner_carry = self.transformer.reset_carry(carry.halted,carry.inner_carry)
+        new_steps = torch.where(carry.halted, 0, carry.steps)
+         # code was written with help from AI
         real_embeddings_input = self.embeddings(original_real_input_ids)  # (B, S, D)
         original_predicted_tokens = self.corrupt_embeddings(real_embeddings_input)  # (B, S, V)
 
@@ -612,10 +615,20 @@ class EBT_NLP(L.LightningModule):
             chunk_pred = repeated_pred[start:end]           # shape: (chunk_size, S, V)
             chunk_real_embeds = repeated_real_embeds[start:end]  # shape: (chunk_size, S, D)
 
-            final_pred_chunk, energies_list_chunk, predicted_distributions_chunk,new_cache = self._run_ebt_inference_steps(
+            final_pred_chunk, energies_list_chunk, predicted_distributions_chunk,new_cache,new_inner_carry = self._run_ebt_inference_steps(
                 chunk_pred, chunk_real_embeds,
-                alpha, noise, start_pos, learning,past_cache=past_cache
+                alpha, noise, start_pos, learning,past_cache=past_cache,new_inner_carry=new_inner_carry
             )
+
+            
+                        # Step
+            new_steps = new_steps + 1
+            is_last_step = new_steps >= 1
+            
+            halted = is_last_step
+
+
+
             all_final_pred[start:end] = final_pred_chunk
 
 
@@ -683,7 +696,8 @@ class EBT_NLP(L.LightningModule):
             final_output = all_final_pred
 
         # final_output shape (B, S, V), energies_list_accum (at each index for original num_mcmc_steps len) shape (B*G, S)
-        return final_output, energies_list_accum, predicted_distributions_accum,new_cache
+        return final_output, energies_list_accum, predicted_distributions_accum,new_cache,TinyRecursiveReasoningModel_ACTV1Carry(new_inner_carry, new_steps, halted)
+
 
     def _run_ebt_inference_steps(
         self,
@@ -692,13 +706,13 @@ class EBT_NLP(L.LightningModule):
         adjusted_alpha,
         noise,
         start_pos,
-        learning,past_cache
+        learning,past_cache,new_inner_carry=None
     ):
         energies_list = []
         pred_states_list = []
         pred_states_list.append(initial_pred_tokens)
 
-        def do_mcmc_step(step_idx, cur_pred_tokens, alpha,past_cache):
+        def do_mcmc_step(step_idx, cur_pred_tokens, alpha,past_cache,new_inner_carry=None):
             with torch.set_grad_enabled(True):
                 cur_pred_tokens = cur_pred_tokens.detach().requires_grad_()
 
@@ -723,10 +737,12 @@ class EBT_NLP(L.LightningModule):
                         pred_embeds = self.vocab_to_embed(cur_pred_tokens) #BS, S, D
                 else:
                     pred_embeds = self.vocab_to_embed(cur_pred_tokens)
-
+                print(pred_embeds.shape,"pred vs real",real_embeds.shape)
                 combined_embeddings = torch.cat([real_embeds, pred_embeds], dim=1)  # (chunk_size, 2S, D)
-                energies,new_cache = self.transformer(combined_embeddings, start_pos=start_pos, mcmc_step=step_idx,past_cache_list=past_cache)
+                
+                energies,new_cache,new_inner_carry1 = self.transformer(combined_embeddings,new_inner_carry, start_pos=start_pos, mcmc_step=step_idx,past_cache_list=past_cache)
                 energies = energies.reshape(-1)
+
                 energies_list.append(energies.detach())
 
                 grad = torch.autograd.grad(energies.sum(), [cur_pred_tokens], create_graph=learning)[0]
@@ -738,16 +754,16 @@ class EBT_NLP(L.LightningModule):
                 if self.hparams.infer_accept_lower_energies: # have to get energy to determine if should decrease
                     old_energies = energies.reshape(cur_pred_tokens.shape[:2])
                     proposed_tokens = cur_pred_tokens - alpha * grad
-                    new_energies,new_cache = get_energy(step_idx, proposed_tokens,past_cache)
+                    new_energies,new_cache,new_inner_carry1 = get_energy(step_idx, proposed_tokens,past_cache,new_inner_carry)
                     new_energies=new_energies.reshape(cur_pred_tokens.shape[:2])
                     accept_mask = (new_energies < old_energies).float().unsqueeze(-1)
                     updated_tokens = accept_mask * proposed_tokens + (1 - accept_mask) * cur_pred_tokens
 
                 else:
                     updated_tokens = cur_pred_tokens - alpha * grad
-                return updated_tokens.detach(),new_cache
+                return updated_tokens.detach(),new_cache, new_inner_carry1
             
-        def get_energy(step_idx, cur_pred_tokens,past_cache): # for if just want to get energy of currently predicted tokens
+        def get_energy(step_idx, cur_pred_tokens,past_cache,new_inner_carry): # for if just want to get energy of currently predicted tokens
             with torch.no_grad():
                 cur_pred_tokens = cur_pred_tokens.detach().requires_grad_()
 
@@ -766,16 +782,16 @@ class EBT_NLP(L.LightningModule):
                 else:
                     pred_embeds = self.vocab_to_embed(cur_pred_tokens)
                 combined_embeddings = torch.cat([real_embeds, pred_embeds], dim=1)  # (chunk_size, 2S, D)
-                energies,new_cache = self.transformer(combined_embeddings, start_pos=start_pos, mcmc_step=step_idx,past_cache_list=past_cache)
+                energies,new_cache,new_inner_carry = self.transformer(combined_embeddings,new_inner_carry, start_pos=start_pos, mcmc_step=step_idx,past_cache_list=past_cache)
                 energies = energies.reshape(-1)
-                return energies,new_cache
+                return energies,new_cache,new_inner_carry
 
         # ebt_type
         if self.hparams.ebt_type == "default":
             total_steps = self.hparams.infer_ebt_num_steps if self.hparams.infer_ebt_num_steps > 1 else self.hparams.mcmc_num_steps
             pred_state = initial_pred_tokens
             for step_idx in range(total_steps):
-                pred_state = do_mcmc_step(step_idx, pred_state, adjusted_alpha,past_cache)
+                pred_state= do_mcmc_step(step_idx, pred_state, adjusted_alpha,past_cache,new_inner_carry=new_inner_carry)[0]
                 pred_states_list.append(pred_state)
         else:
             # alternative ebt_type i.e. adaln or time embed
@@ -783,19 +799,19 @@ class EBT_NLP(L.LightningModule):
             for step_idx in range(self.hparams.mcmc_num_steps):
                 if self.hparams.infer_steps_final_landscape and step_idx != (self.hparams.mcmc_num_steps - 1):
                     alpha = self.alpha if self.hparams.infer_alpha_final_landscape else adjusted_alpha
-                    pred_state,new_cache = do_mcmc_step(step_idx, pred_state, alpha)
+                    pred_state,new_cache,new_inner_carry1 = do_mcmc_step(step_idx, pred_state, alpha,past_cache,new_inner_carry=new_inner_carry)
                     pred_states_list.append(pred_state)
                 else:
                     inner_steps = self.hparams.infer_ebt_num_steps if self.hparams.infer_ebt_num_steps != 1 else (self.hparams.randomize_mcmc_num_steps_min if self.hparams.randomize_mcmc_num_steps_min != 0 else 1)
                     for _ in range(inner_steps):
                         alpha = self.alpha if (self.hparams.infer_alpha_final_landscape and step_idx != (self.hparams.mcmc_num_steps - 1)) else adjusted_alpha
-                        pred_state,new_cache = do_mcmc_step(step_idx, pred_state, alpha,past_cache=past_cache)
+                        pred_state,new_cache,new_inner_carry1 = do_mcmc_step(step_idx, pred_state, alpha,past_cache=past_cache,new_inner_carry=new_inner_carry)[:2]
                         pred_states_list.append(pred_state)
 
 
-        final_pred_state_energies,new_cache = get_energy((self.hparams.mcmc_num_steps - 1), pred_state,past_cache=past_cache)
+        final_pred_state_energies,new_cache,new_inner_carry1 = get_energy((self.hparams.mcmc_num_steps - 1), pred_state,past_cache=past_cache,new_inner_carry=new_inner_carry)
         energies_list.append(final_pred_state_energies)
-        return pred_state, energies_list, pred_states_list,new_cache
+        return pred_state, energies_list, pred_states_list,new_cache,new_inner_carry1
     
 
 if __name__=="__main__":

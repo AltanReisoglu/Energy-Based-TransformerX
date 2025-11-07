@@ -211,7 +211,7 @@ def main():
 
         for step, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch}")):
             if carry is None:
-                carry = model.initial_carry(batch['input_ids'].size(0), 2 * batch['input_ids'].size(1) - 2)
+                carry = model.initial_carry(batch['input_ids'].size(0), 2 * batch['input_ids'].size(1))
 
             with accelerator.accumulate(model):
                 with autocast(enabled=(accelerator.mixed_precision == "fp16")):

@@ -763,7 +763,7 @@ class AdaLNTransformerBlock(nn.Module):
         
         h = x + gate_msa.unsqueeze(1) * self.advanced_dropout(attn)
         x = self.residual_fn(h, x)
-  
+
         out = h + gate_mlp.unsqueeze(1) * self.feed_forward(modulate(self.ffn_norm(h), shift_mlp, scale_mlp))
         out = self.residual_fn(out, x)
         
@@ -775,6 +775,8 @@ class EnergeticRecursiveReasoningModel_ACTV1ReasoningModule(nn.Module):
         self.layers = layers
 
     def forward(self, embeddings: torch.Tensor, input_injection: torch.Tensor, past_cache_list,start_pos,freqs_cis_q,freqs_cis_k,mask,time_embeddings,mems,prev_attns,mask2,pre_mem,allow=False) -> torch.Tensor:
+        print("Entering reasoning module forward")
+        print(embeddings.shape, input_injection.shape,"DEĞERLER DEĞERLER")
         embeddings = embeddings + input_injection
         for i, layer in enumerate(self.layers):
             past = past_cache_list[i] if past_cache_list is not None else None
@@ -954,6 +956,8 @@ class EBTAdaLN(nn.Module):
 
 
             z_H, z_L = carry.z_H, carry.z_L
+
+            print(z_H.shape, z_L.shape, embeddings.shape, "SHAPES SHAPES SHAPES")
             # H_cycles-1 without grad
             with torch.no_grad():
                 for _H_step in range(1):
