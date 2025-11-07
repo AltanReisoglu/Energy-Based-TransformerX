@@ -1,0 +1,23 @@
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+env/
+*.pyc
+.git/
+data/
+*/data/
+checkpoint_epoch_*.pt
+final_model.pt
+*.ckpt
+selimfirat/
+*.log
+/.idea/
+.vscode/
+dist/
+build/
+*.egg-info/
+\.DS_Store
+"""
+Ignore typical files to keep Docker build context small
+"""
