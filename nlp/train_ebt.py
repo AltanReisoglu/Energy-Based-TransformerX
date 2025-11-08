@@ -107,10 +107,10 @@ def main():
         ebt_norm="rms",
         ebt_act_func="silu",
         dyt_alpha_init=0.5,
-        mcmc_replay_buffer=False,
+        mcmc_replay_buffer=True,
         gaussian_random_noise_scaling=1.0,
         normalize_initial_condition_only_first_step=False,
-        randomize_mcmc_step_size_scale=1.0,
+        randomize_mcmc_step_size_scale=1,#changed
         randomize_mcmc_num_steps=0,
         randomize_mcmc_num_steps_min=0,
         randomize_mcmc_num_steps_final_landscape=False,
@@ -141,7 +141,9 @@ def main():
         use_amp=False,
         use_activation_checkpointing=True,
         use_torch_compile=True,
-        use_bnb_optimizer=False
+        use_bnb_optimizer=False,
+        mcmc_replay_buffer_size=64,
+        mcmc_replay_buffer_sample_bs_percent=0.5
     )
     hparams.update(ebt_params)
 
@@ -211,7 +213,7 @@ def main():
 
         for step, batch in enumerate(tqdm(dataloader, desc=f"Epoch {epoch}")):
             if carry is None:
-                carry = model.initial_carry(batch['input_ids'].size(0), 2 * batch['input_ids'].size(1))
+                carry = model.initial_carry(batch['input_ids'].size(0), 2 * batch['input_ids'].size(1)-2)
 
             with accelerator.accumulate(model):
                 with autocast(enabled=(accelerator.mixed_precision == "fp16")):

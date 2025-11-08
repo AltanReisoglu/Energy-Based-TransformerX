@@ -433,7 +433,7 @@ class EBT_NLP(L.LightningModule):
         # in general this equals self.hparams.mcmc_num_steps, isnt in case of rand number
         for mcmc_step, (predicted_distribution, predicted_energy) in enumerate(zip(predicted_distributions, predicted_energies)):
            
-            lyapunov_loss_value=lyapunov_loss(self.lyap, system_dynamics,predicted_energy,B,T, margin=0.01)
+            #lyapunov_loss_value=lyapunov_loss(self.lyap, system_dynamics,predicted_energy,B,T, margin=0.01)
             if self.hparams.soften_target_prob_dist != 0.0:
                 if total_mcmc_steps <= 1:
                     label_smoothing = 0.0
@@ -471,7 +471,7 @@ class EBT_NLP(L.LightningModule):
 
         if self.hparams.contrastive_loss: # works by pushing up on energies model predicted and pushing down on energy of true samples
             contrastive_loss = self.calculate_contrastive_loss(predicted_energies, input_ids, next_token_indices,past_cache=past_cache)
-            total_loss = self.hparams.reconstruction_coeff * reconstruction_loss + self.hparams.contrastive_loss_coeff * contrastive_loss+lyapunov_loss_value
+            total_loss = self.hparams.reconstruction_coeff * reconstruction_loss + self.hparams.contrastive_loss_coeff * contrastive_loss
             contrastive_loss = contrastive_loss.detach() #üste lyapunov eklenebilir.
         else:
             total_loss = self.hparams.reconstruction_coeff * reconstruction_loss
@@ -481,7 +481,7 @@ class EBT_NLP(L.LightningModule):
             'loss': total_loss,
             'initial_loss' : initial_loss,
             'final_step_loss': final_reconstruction_loss,
-            'lyapunov_loss':lyapunov_loss_value,
+            
             'contrastive_loss' : contrastive_loss,
             'initial_final_pred_energies_gap': initial_final_pred_energies_gap,
             'perplexity': ppl_loss
@@ -737,7 +737,7 @@ class EBT_NLP(L.LightningModule):
                         pred_embeds = self.vocab_to_embed(cur_pred_tokens) #BS, S, D
                 else:
                     pred_embeds = self.vocab_to_embed(cur_pred_tokens)
-                print(pred_embeds.shape,"pred vs real",real_embeds.shape)
+                #print(pred_embeds.shape,"pred vs real",real_embeds.shape)
                 combined_embeddings = torch.cat([real_embeds, pred_embeds], dim=1)  # (chunk_size, 2S, D)
                 
                 energies,new_cache,new_inner_carry1 = self.transformer(combined_embeddings,new_inner_carry, start_pos=start_pos, mcmc_step=step_idx,past_cache_list=past_cache)

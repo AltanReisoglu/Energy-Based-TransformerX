@@ -651,7 +651,7 @@ class Attention(nn.Module):
             output_o=rearrange(output_o,"b h n d -> b n (h d)")
 
         out = torch.cat((output_o, output_p), dim = 1) # B, 2(S-1), D
-        
+        #print("N EDELİM FADİEMEMM ",output_p.shape,output_o.shape)
 
         if exists(self.v_proj_gate):
             gates = self.v_proj_gate(x)
@@ -775,8 +775,8 @@ class EnergeticRecursiveReasoningModel_ACTV1ReasoningModule(nn.Module):
         self.layers = layers
 
     def forward(self, embeddings: torch.Tensor, input_injection: torch.Tensor, past_cache_list,start_pos,freqs_cis_q,freqs_cis_k,mask,time_embeddings,mems,prev_attns,mask2,pre_mem,allow=False) -> torch.Tensor:
-        print("Entering reasoning module forward")
-        print(embeddings.shape, input_injection.shape,"DEĞERLER DEĞERLER")
+        """print("Entering reasoning module forward")
+        print(embeddings.shape, input_injection.shape,"DEĞERLER DEĞERLER")"""
         embeddings = embeddings + input_injection
         for i, layer in enumerate(self.layers):
             past = past_cache_list[i] if past_cache_list is not None else None
@@ -957,7 +957,7 @@ class EBTAdaLN(nn.Module):
 
             z_H, z_L = carry.z_H, carry.z_L
 
-            print(z_H.shape, z_L.shape, embeddings.shape, "SHAPES SHAPES SHAPES")
+            #print(z_H.shape, z_L.shape, embeddings.shape, "SHAPES SHAPES SHAPES")
             # H_cycles-1 without grad
             with torch.no_grad():
                 for _H_step in range(1):

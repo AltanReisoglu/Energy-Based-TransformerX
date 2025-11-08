@@ -152,7 +152,7 @@ def main():
 
     essentially=dict(
         ckpt=r"C:\Users\bahaa\OneDrive\Masaüstü\energic_model\checkpoint_epoch_1.pt",
-        prompt=" Okul güzel bir yer ama bana göre değil Okul güzel bir yer ama bana göre değil Okul güzel bir yer ama bana göre değil Okul güzel bir yer ama bana göre değil Okul güzel bir yer ama bana göre değil Okul güzel bir yer ama bana göre değil",
+        prompt=" Okul güzel bir yer ama bana göre değil Okul güz",
         batch_size=1,
         max_len=64
         
@@ -203,7 +203,7 @@ def main():
         input_ids = prepare_inputs(essentially.prompt, tokenizer,essentially.max_len , device).unsqueeze(0)
         input_ids=torch.cat((input_ids,input_ids),dim=0)
         if carry is None:
-            carry = model.initial_carry(input_ids.size(0),  2*input_ids.size(1))
+            carry = model.initial_carry(input_ids.size(0),  2*input_ids.size(1)-2)
 
         print("Input IDs shape:", input_ids.shape)
         # model.ebt_advanced_inference expects token ids (B, S)
